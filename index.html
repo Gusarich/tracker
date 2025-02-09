@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Productivity Tracker</title>
+        <style>
+            /* Reset */
+            * {
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
+            }
+            html,
+            body {
+                height: 100%;
+            }
+            /* Hide scrollbar for Chrome, Safari and Opera */
+            ::-webkit-scrollbar {
+                display: none;
+            }
+            /* Hide scrollbar for IE, Edge and Firefox */
+            body {
+                -ms-overflow-style: none;
+                scrollbar-width: none;
+            }
+            body {
+                background-color: #111;
+                color: #0ff;
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                min-height: 100vh;
+                display: flex;
+                flex-direction: column;
+            }
+            /* Wrapper for all content */
+            #wrapper {
+                width: 100%;
+                flex: 1;
+            }
+            /* Container for timer and buttons */
+            #centerContainer {
+                text-align: center;
+                /* margin-top will be set dynamically */
+            }
+            /* Total timer display with neon glow */
+            #totalTime {
+                font-size: 3rem;
+                margin-bottom: 20px;
+                text-shadow: 0 0 10px #0ff;
+            }
+            /* Current session timer (smaller) */
+            #currentSessionTimer {
+                font-size: 1.5rem;
+                margin-bottom: 20px;
+                text-shadow: 0 0 5px #0ff;
+                display: none; /* Only visible during an active session */
+            }
+            /* Neon-style, round, glowy button */
+            button {
+                background: transparent;
+                border: 2px solid #0ff;
+                color: #0ff;
+                padding: 20px 40px;
+                font-size: 1.5rem;
+                cursor: pointer;
+                border-radius: 50px;
+                box-shadow: 0 0 10px #0ff;
+                margin: 0 5px;
+            }
+            button:hover {
+                box-shadow: 0 0 30px #0ff;
+            }
+            /* Session list container */
+            #sessionContainer {
+                width: 90%;
+                max-width: 400px;
+                margin: 0 auto;
+            }
+            /* Session list styling */
+            #sessionList li {
+                margin: 5px 0;
+                list-style: none;
+                padding: 10px;
+                background-color: rgba(0, 255, 255, 0.1);
+                border: 1px solid #0ff;
+                border-radius: 5px;
+                color: #0ff;
+                text-shadow: 0 0 5px #0ff;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+            #sessionList li span {
+                flex-grow: 1;
+                margin-right: 10px;
+            }
+            #sessionList button {
+                background: transparent;
+                border: 1px solid #0ff;
+                color: #0ff;
+                padding: 5px 10px;
+                cursor: pointer;
+                border-radius: 5px;
+                transition: all 0.3s ease;
+            }
+            #sessionList button:hover {
+                box-shadow: 0 0 10px #0ff;
+            }
+            /* Footer styling */
+            footer {
+                text-align: center;
+                padding: 20px;
+                color: #0ff;
+                font-size: 1rem;
+            }
+        </style>
+    </head>
+    <body>
+        <div id="wrapper">
+            <!-- Timer and buttons container -->
+            <div id="centerContainer">
+                <div id="totalTime">00:00:00</div>
+                <div id="currentSessionTimer">00:00:00</div>
+                <button id="toggleButton">Start</button>
+                <button id="pauseButton" style="display: none">Pause</button>
+            </div>
+
+            <!-- Session list container -->
+            <div id="sessionContainer">
+                <ul id="sessionList"></ul>
+            </div>
+        </div>
+
+        <!-- Footer with your authority -->
+        <footer>Made by Gusarich with ❤️</footer>
+
+        <script>
+            /***************
+             * Helper Functions
+             ***************/
+            // Format milliseconds into HH:MM:SS.
+            function formatTime(ms) {
+                const totalSeconds = Math.floor(ms / 1000);
+                const hours = Math.floor(totalSeconds / 3600);
+                const minutes = Math.floor((totalSeconds % 3600) / 60);
+                const seconds = totalSeconds % 60;
+                return (
+                    String(hours).padStart(2, '0') +
+                    ':' +
+                    String(minutes).padStart(2, '0') +
+                    ':' +
+                    String(seconds).padStart(2, '0')
+                );
+            }
+
+            // LocalStorage keys.
+            const STORAGE_DATE_KEY = 'trackerDate';
+            const STORAGE_SESSIONS_KEY = 'trackerSessions';
+            const STORAGE_CURRENT_SESSION_KEY = 'trackerCurrentSession';
+
+            // Daily reset: if the stored date isn't today, clear sessions.
+            const todayStr = new Date().toISOString().slice(0, 10);
+            if (localStorage.getItem(STORAGE_DATE_KEY) !== todayStr) {
+                localStorage.setItem(STORAGE_DATE_KEY, todayStr);
+                localStorage.setItem(STORAGE_SESSIONS_KEY, '[]');
+            }
+
+            // Retrieve and save sessions.
+            function getSessions() {
+                return JSON.parse(
+                    localStorage.getItem(STORAGE_SESSIONS_KEY) || '[]'
+                );
+            }
+            function saveSessions(sessions) {
+                localStorage.setItem(
+                    STORAGE_SESSIONS_KEY,
+                    JSON.stringify(sessions)
+                );
+            }
+            // Compute accumulated time from stored sessions.
+            function computeAccumulatedTime() {
+                const sessions = getSessions();
+                return sessions.reduce((acc, session) => {
+                    // Use session.activeDuration if available; otherwise, use end - start.
+                    const duration =
+                        session.activeDuration !== undefined
+                            ? session.activeDuration
+                            : session.end - session.start;
+                    return acc + duration;
+                }, 0);
+            }
+
+            /***************
+             * Current Session State Variables
+             ***************/
+            let timerInterval = null;
+            // These track the current session.
+            let sessionStart = null; // Aligned start time of the session.
+            let startTime = null; // Time when the current “active” period began.
+            let currentSessionElapsed = 0; // Total active time (in ms) in the current session.
+            let isPaused = false;
+
+            // Helper: Save current session state to localStorage.
+            function saveCurrentSessionState() {
+                if (sessionStart !== null) {
+                    const state = {
+                        sessionStart,
+                        startTime,
+                        currentSessionElapsed,
+                        isPaused,
+                    };
+                    localStorage.setItem(
+                        STORAGE_CURRENT_SESSION_KEY,
+                        JSON.stringify(state)
+                    );
+                } else {
+                    localStorage.removeItem(STORAGE_CURRENT_SESSION_KEY);
+                }
+            }
+
+            /***************
+             * Display Update Function
+             ***************/
+            function updateDisplays() {
+                // Use one shared timestamp.
+                const now = Date.now();
+                // Overall time from previous sessions.
+                let overall = computeAccumulatedTime();
+                // Current active time for this session.
+                let currentTime = currentSessionElapsed;
+                if (startTime && !isPaused) {
+                    currentTime += now - startTime;
+                }
+                // Main timer is the sum.
+                const mainTime = overall + currentTime;
+
+                // Update displays.
+                document.getElementById('totalTime').textContent =
+                    formatTime(mainTime);
+                if (sessionStart !== null) {
+                    document.getElementById('currentSessionTimer').textContent =
+                        formatTime(currentTime);
+                }
+
+                // Save current session state.
+                saveCurrentSessionState();
+            }
+
+            /***************
+             * Render Session List
+             ***************/
+            function renderSessionList() {
+                const sessions = getSessions();
+                const sessionListEl = document.getElementById('sessionList');
+                sessionListEl.innerHTML = '';
+                sessions
+                    .slice()
+                    .reverse()
+                    .forEach((session, revIndex) => {
+                        const origIndex = sessions.length - 1 - revIndex;
+                        const li = document.createElement('li');
+                        // Use activeDuration if available.
+                        const duration =
+                            session.activeDuration !== undefined
+                                ? session.activeDuration
+                                : session.end - session.start;
+                        const startTimeStr = new Date(
+                            session.start
+                        ).toLocaleTimeString();
+                        const endTimeStr = new Date(
+                            session.end
+                        ).toLocaleTimeString();
+                        li.innerHTML = `<span>Session ${
+                            origIndex + 1
+                        }: ${startTimeStr} - ${endTimeStr} (Active Duration: ${formatTime(
+                            duration
+                        )})</span>`;
+                        const deleteBtn = document.createElement('button');
+                        deleteBtn.textContent = 'Delete';
+                        deleteBtn.addEventListener('click', function () {
+                            let sessions = getSessions();
+                            sessions.splice(origIndex, 1);
+                            saveSessions(sessions);
+                            updateDisplays();
+                            renderSessionList();
+                            adjustCenter();
+                        });
+                        li.appendChild(deleteBtn);
+                        sessionListEl.appendChild(li);
+                    });
+            }
+
+            /***************
+             * Layout Adjustment (same as before)
+             ***************/
+            function adjustCenter(initial = false) {
+                const sessions = getSessions();
+                const centerContainer =
+                    document.getElementById('centerContainer');
+                const sessionContainer =
+                    document.getElementById('sessionContainer');
+                if (sessions.length === 0) {
+                    centerContainer.style.transition = initial
+                        ? 'none'
+                        : 'margin-top 0.3s ease';
+                    const gap =
+                        (window.innerHeight - centerContainer.offsetHeight) / 2;
+                    centerContainer.style.marginTop = gap + 'px';
+                    sessionContainer.style.marginTop = gap + 'px';
+                } else {
+                    centerContainer.style.transition = 'margin-top 0.3s ease';
+                    const gap = 50;
+                    centerContainer.style.marginTop = gap + 'px';
+                    sessionContainer.style.marginTop = gap + 'px';
+                }
+            }
+            window.addEventListener('resize', () => adjustCenter());
+
+            /***************
+             * Button Event Handlers
+             ***************/
+            // Start / Stop button.
+            document
+                .getElementById('toggleButton')
+                .addEventListener('click', function () {
+                    const toggleButton =
+                        document.getElementById('toggleButton');
+                    if (sessionStart === null) {
+                        // Start a new session.
+                        // Align the session start to a full second:
+                        const now = Date.now();
+                        const aligned = now - (now % 1000);
+                        sessionStart = aligned;
+                        startTime = aligned;
+                        currentSessionElapsed = 0;
+                        isPaused = false;
+                        toggleButton.textContent = 'Stop';
+                        document.getElementById('pauseButton').textContent =
+                            'Pause';
+                        document.getElementById('pauseButton').style.display =
+                            'inline-block';
+                        document.getElementById(
+                            'currentSessionTimer'
+                        ).style.display = 'block';
+                        updateDisplays();
+                        timerInterval = setInterval(updateDisplays, 250);
+                    } else {
+                        // Stop the active session.
+                        if (!isPaused && startTime) {
+                            // Calculate the active period and align it.
+                            const activePeriod = Date.now() - startTime;
+                            const alignedActivePeriod =
+                                activePeriod - (activePeriod % 1000);
+                            currentSessionElapsed += alignedActivePeriod;
+                        }
+                        const sessionEnd = Date.now();
+                        let sessions = getSessions();
+                        sessions.push({
+                            start: sessionStart,
+                            end: sessionEnd,
+                            activeDuration: currentSessionElapsed,
+                        });
+                        saveSessions(sessions);
+                        // Reset session state.
+                        sessionStart = null;
+                        startTime = null;
+                        currentSessionElapsed = 0;
+                        isPaused = false;
+                        clearInterval(timerInterval);
+                        timerInterval = null;
+                        toggleButton.textContent = 'Start';
+                        document.getElementById('pauseButton').style.display =
+                            'none';
+                        document.getElementById(
+                            'currentSessionTimer'
+                        ).style.display = 'none';
+                        // Immediately reset the current timer display.
+                        document.getElementById(
+                            'currentSessionTimer'
+                        ).textContent = '00:00:00';
+                        updateDisplays();
+                        renderSessionList();
+                        adjustCenter();
+                    }
+                    // Save (or clear) the current session state.
+                    saveCurrentSessionState();
+                });
+
+            // Pause / Resume button.
+            document
+                .getElementById('pauseButton')
+                .addEventListener('click', function () {
+                    const pauseButton = document.getElementById('pauseButton');
+                    if (!isPaused) {
+                        if (startTime) {
+                            // Align the active period when pausing.
+                            const activePeriod = Date.now() - startTime;
+                            const alignedActivePeriod =
+                                activePeriod - (activePeriod % 1000);
+                            currentSessionElapsed += alignedActivePeriod;
+                        }
+                        isPaused = true;
+                        startTime = null;
+                        pauseButton.textContent = 'Resume';
+                    } else {
+                        isPaused = false;
+                        // Align the resume time.
+                        const now = Date.now();
+                        startTime = now - (now % 1000);
+                        pauseButton.textContent = 'Pause';
+                    }
+                    updateDisplays();
+                });
+
+            /***************
+             * Restore In-Progress Session on Page Load
+             ***************/
+            const storedSession = localStorage.getItem(
+                STORAGE_CURRENT_SESSION_KEY
+            );
+            if (storedSession) {
+                const cs = JSON.parse(storedSession);
+                sessionStart = cs.sessionStart;
+                startTime = cs.startTime;
+                currentSessionElapsed = cs.currentSessionElapsed;
+                isPaused = cs.isPaused;
+                document.getElementById('toggleButton').textContent = 'Stop';
+                document.getElementById('pauseButton').style.display =
+                    'inline-block';
+                document.getElementById('currentSessionTimer').style.display =
+                    'block';
+                document.getElementById('pauseButton').textContent = isPaused
+                    ? 'Resume'
+                    : 'Pause';
+                timerInterval = setInterval(updateDisplays, 250);
+            }
+
+            /***************
+             * Initialization on Page Load
+             ***************/
+            updateDisplays();
+            renderSessionList();
+            adjustCenter(true);
+        </script>
+    </body>
+</html>
